@@ -1,0 +1,58 @@
+name: Build SR AI Voice Studio APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract Android source ZIP if uploaded instead of source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f settings.gradle.kts ]]; then
+            python3 - <<'PY'
+          import pathlib, zipfile
+          matches = [p for p in pathlib.Path('.').glob('*.zip') if zipfile.is_zipfile(p)]
+          for p in matches:
+              with zipfile.ZipFile(p) as z:
+                  if 'settings.gradle.kts' in z.namelist():
+                      z.extractall('.')
+                      break
+          else:
+              raise SystemExit('Upload the SR AI Voice Studio Android Source ZIP to repository root')
+          PY
+          fi
+          test -f app/build.gradle.kts
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Prepare offline neural model assets
+        run: python tools/prepare_models.py
+      - name: Build and lint APK
+        run: gradle --no-daemon --stacktrace :app:assembleDebug :app:lintDebug
+      - name: Verify APK signature
+        run: |
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose app/build/outputs/apk/debug/app-debug.apk
+          cp app/build/outputs/apk/debug/app-debug.apk SR-AI-Voice-Studio-Pro.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SR-AI-Voice-Studio-Pro-APK
+          path: SR-AI-Voice-Studio-Pro.apk
+          if-no-files-found: error
+          compression-level: 0
