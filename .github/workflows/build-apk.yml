@@ -30,7 +30,7 @@ jobs:
           if archive.exists():
               with zipfile.ZipFile(archive) as z:
                   assert z.testzip() is None, 'Damaged source ZIP'
-                  assert 'tools/source-version.txt' in z.namelist() and z.read('tools/source-version.txt').decode().strip() == '1.1-pro', 'Replace the old source ZIP with the corrected 1.1 ZIP'
+                  assert 'tools/source-version.txt' in z.namelist() and z.read('tools/source-version.txt').decode().strip() == '1.2-pro', 'Replace the old source ZIP with the corrected 1.2 ZIP'
                   for info in z.infolist():
                       p = PurePosixPath(info.filename)
                       if p.is_absolute() or '..' in p.parts or '\\' in info.filename:
@@ -41,7 +41,7 @@ jobs:
                       dest.parent.mkdir(parents=True, exist_ok=True)
                       with z.open(info) as src, dest.open('wb') as out:
                           shutil.copyfileobj(src, out)
-          assert marker.is_file() and marker.read_text().strip() == '1.1-pro', 'Upload corrected 1.1 ZIP to repository root (keep its filename) or upload the extracted 1.1 source'
+          assert marker.is_file() and marker.read_text().strip() == '1.2-pro', 'Upload corrected 1.2 ZIP to repository root (keep its filename) or upload the extracted 1.2 source'
           for name in ['settings.gradle.kts', 'app/build.gradle.kts', 'tools/prepare_models.py', 'tools/verify_apk.py']:
               assert (root/name).is_file(), 'Missing source file: ' + name
           PY
@@ -77,12 +77,14 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Validate model preparation logic
+      - name: Validate source and model preparation logic
         run: python -m unittest discover -s tests -p 'test_*.py' -v
       - name: Prepare native voice library
         run: python tools/prepare_models.py --aar-only
       - name: Compile Android Kotlin before downloading large models
         run: gradle --no-daemon --stacktrace :app:compileDebugKotlin
+      - name: Run Android lint before downloading models
+        run: gradle --no-daemon --stacktrace :app:lintDebug
       - name: Prepare offline neural model assets
         run: python tools/prepare_models.py --models-only
       - name: Build and lint APK
@@ -111,5 +113,6 @@ jobs:
           name: SR-Voice-Build-Diagnostics
           path: |
             app/build/reports/
+            app/build/intermediates/lint_intermediate_text_report/
             build/reports/
           if-no-files-found: ignore
