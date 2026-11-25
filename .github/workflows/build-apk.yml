@@ -5,54 +5,111 @@ on:
     branches: [main, master]
 permissions:
   contents: read
+concurrency:
+  group: sr-voice-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      - name: Extract Android source ZIP if uploaded instead of source tree
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Extract and check Android source ZIP
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! -f settings.gradle.kts ]]; then
-            python3 - <<'PY'
-          import pathlib, zipfile
-          matches = [p for p in pathlib.Path('.').glob('*.zip') if zipfile.is_zipfile(p)]
-          for p in matches:
-              with zipfile.ZipFile(p) as z:
-                  if 'settings.gradle.kts' in z.namelist():
-                      z.extractall('.')
-                      break
-          else:
-              raise SystemExit('Upload the SR AI Voice Studio Android Source ZIP to repository root')
+          python - <<'PY'
+          from pathlib import Path, PurePosixPath
+          import zipfile, shutil
+          root = Path('.')
+          marker = root / 'tools/source-version.txt'
+          archive = root / 'SR_AI_Voice_Studio_Pro_Source.zip'
+          if archive.exists():
+              with zipfile.ZipFile(archive) as z:
+                  assert z.testzip() is None, 'Damaged source ZIP'
+                  assert 'tools/source-version.txt' in z.namelist() and z.read('tools/source-version.txt').decode().strip() == '1.1-pro', 'Replace the old source ZIP with the corrected 1.1 ZIP'
+                  for info in z.infolist():
+                      p = PurePosixPath(info.filename)
+                      if p.is_absolute() or '..' in p.parts or '\\' in info.filename:
+                          raise ValueError('Unsafe ZIP member: ' + info.filename)
+                      if info.is_dir() or p.parts[0] == '.github':
+                          continue
+                      dest = root.joinpath(*p.parts)
+                      dest.parent.mkdir(parents=True, exist_ok=True)
+                      with z.open(info) as src, dest.open('wb') as out:
+                          shutil.copyfileobj(src, out)
+          assert marker.is_file() and marker.read_text().strip() == '1.1-pro', 'Upload corrected 1.1 ZIP to repository root (keep its filename) or upload the extracted 1.1 source'
+          for name in ['settings.gradle.kts', 'app/build.gradle.kts', 'tools/prepare_models.py', 'tools/verify_apk.py']:
+              assert (root/name).is_file(), 'Missing source file: ' + name
           PY
-          fi
-          test -f app/build.gradle.kts
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - uses: android-actions/setup-android@v3
-      - name: Install Android SDK
-        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      # GitHub-hosted Ubuntu already includes Android SDK. Do not install the retired 'tools' package.
+      - name: Verify or install required Android SDK components
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          test -d "$SDK"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          if [[ -f "$SDK/platforms/android-35/android.jar" && -x "$SDK/build-tools/35.0.0/apksigner" ]]; then
+            echo 'Required SDK components already installed.'
+          else
+            MANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
+            if [[ ! -x "$MANAGER" ]]; then
+              MANAGER="$(find "$SDK/cmdline-tools" -path '*/bin/sdkmanager' -type f | sort -V | tail -1)"
+            fi
+            test -x "$MANAGER"
+            # yes can exit 141 when sdkmanager closes its input; check sdkmanager itself.
+            set +o pipefail
+            yes | "$MANAGER" --sdk_root="$SDK" --licenses > /dev/null
+            set -o pipefail
+            "$MANAGER" --sdk_root="$SDK" --install 'platforms;android-35' 'build-tools;35.0.0'
+          fi
+          test -s "$SDK/platforms/android-35/android.jar"
+          test -x "$SDK/build-tools/35.0.0/apksigner"
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
+      - name: Validate model preparation logic
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Prepare native voice library
+        run: python tools/prepare_models.py --aar-only
+      - name: Compile Android Kotlin before downloading large models
+        run: gradle --no-daemon --stacktrace :app:compileDebugKotlin
       - name: Prepare offline neural model assets
-        run: python tools/prepare_models.py
+        run: python tools/prepare_models.py --models-only
       - name: Build and lint APK
         run: gradle --no-daemon --stacktrace :app:assembleDebug :app:lintDebug
-      - name: Verify APK signature
+      - name: Verify APK contents, offline permission and signature
+        shell: bash
         run: |
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose app/build/outputs/apk/debug/app-debug.apk
-          cp app/build/outputs/apk/debug/app-debug.apk SR-AI-Voice-Studio-Pro.apk
+          set -euo pipefail
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          python tools/verify_apk.py "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump permissions "$APK" | tee /tmp/sr-voice-permissions.txt
+          if grep -q 'android.permission.INTERNET' /tmp/sr-voice-permissions.txt; then
+            echo 'Unexpected INTERNET permission' >&2; exit 1
+          fi
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$APK"
+          cp "$APK" SR-AI-Voice-Studio-Pro.apk
       - uses: actions/upload-artifact@v4
         with:
           name: SR-AI-Voice-Studio-Pro-APK
           path: SR-AI-Voice-Studio-Pro.apk
           if-no-files-found: error
           compression-level: 0
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: SR-Voice-Build-Diagnostics
+          path: |
+            app/build/reports/
+            build/reports/
+          if-no-files-found: ignore
