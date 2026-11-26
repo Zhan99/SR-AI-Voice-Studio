@@ -30,7 +30,7 @@ jobs:
           if archive.exists():
               with zipfile.ZipFile(archive) as z:
                   assert z.testzip() is None, 'Damaged source ZIP'
-                  assert 'tools/source-version.txt' in z.namelist() and z.read('tools/source-version.txt').decode().strip() == '1.3-pro', 'Replace the old source ZIP with the corrected 1.3 ZIP'
+                  assert 'tools/source-version.txt' in z.namelist() and z.read('tools/source-version.txt').decode().strip() == '1.4-pro', 'Replace the old source ZIP with the corrected 1.4 ZIP'
                   for info in z.infolist():
                       p = PurePosixPath(info.filename)
                       if p.is_absolute() or '..' in p.parts or '\\' in info.filename:
@@ -41,7 +41,7 @@ jobs:
                       dest.parent.mkdir(parents=True, exist_ok=True)
                       with z.open(info) as src, dest.open('wb') as out:
                           shutil.copyfileobj(src, out)
-          assert marker.is_file() and marker.read_text().strip() == '1.3-pro', 'Upload corrected 1.3 ZIP to repository root (keep its filename) or upload the extracted 1.3 source'
+          assert marker.is_file() and marker.read_text().strip() == '1.4-pro', 'Upload corrected 1.4 ZIP to repository root (keep its filename) or upload the extracted 1.4 source'
           for name in ['settings.gradle.kts', 'app/build.gradle.kts', 'tools/prepare_models.py', 'tools/verify_apk.py']:
               assert (root/name).is_file(), 'Missing source file: ' + name
           PY
@@ -98,7 +98,8 @@ jobs:
           test -x "$exe"
           lib="$(find "$d" -type f -name 'libonnxruntime.so*' -print -quit)"
           if [[ -n "$lib" ]]; then export LD_LIBRARY_PATH="$(dirname "$lib"):${LD_LIBRARY_PATH:-}"; fi
-          python tools/smoke_models.py "$exe"
+          mkdir -p build/reports/native-tts
+          python -u tools/smoke_models.py "$exe" 2>&1 | tee build/reports/native-tts/inference.log
       - name: Build and lint APK
         run: gradle --no-daemon --stacktrace :app:assembleDebug :app:lintDebug
       - name: Verify APK contents, offline permission and signature
