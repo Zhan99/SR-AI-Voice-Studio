@@ -30,7 +30,7 @@ jobs:
           if archive.exists():
               with zipfile.ZipFile(archive) as z:
                   assert z.testzip() is None, 'Damaged source ZIP'
-                  assert 'tools/source-version.txt' in z.namelist() and z.read('tools/source-version.txt').decode().strip() == '1.2-pro', 'Replace the old source ZIP with the corrected 1.2 ZIP'
+                  assert 'tools/source-version.txt' in z.namelist() and z.read('tools/source-version.txt').decode().strip() == '1.3-pro', 'Replace the old source ZIP with the corrected 1.3 ZIP'
                   for info in z.infolist():
                       p = PurePosixPath(info.filename)
                       if p.is_absolute() or '..' in p.parts or '\\' in info.filename:
@@ -41,7 +41,7 @@ jobs:
                       dest.parent.mkdir(parents=True, exist_ok=True)
                       with z.open(info) as src, dest.open('wb') as out:
                           shutil.copyfileobj(src, out)
-          assert marker.is_file() and marker.read_text().strip() == '1.2-pro', 'Upload corrected 1.2 ZIP to repository root (keep its filename) or upload the extracted 1.2 source'
+          assert marker.is_file() and marker.read_text().strip() == '1.3-pro', 'Upload corrected 1.3 ZIP to repository root (keep its filename) or upload the extracted 1.3 source'
           for name in ['settings.gradle.kts', 'app/build.gradle.kts', 'tools/prepare_models.py', 'tools/verify_apk.py']:
               assert (root/name).is_file(), 'Missing source file: ' + name
           PY
@@ -87,6 +87,18 @@ jobs:
         run: gradle --no-daemon --stacktrace :app:lintDebug
       - name: Prepare offline neural model assets
         run: python tools/prepare_models.py --models-only
+      - name: Test actual neural inference on Linux (same Sherpa runtime version)
+        shell: bash
+        run: |
+          set -euo pipefail
+          d="$(mktemp -d)"
+          curl --fail --location --retry 4 --retry-all-errors --connect-timeout 30 --max-time 600 -o "$d/runtime.tar.bz2" 'https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.12.23/sherpa-onnx-v1.12.23-linux-x64-shared.tar.bz2'
+          tar -xjf "$d/runtime.tar.bz2" -C "$d"
+          exe="$(find "$d" -type f -name sherpa-onnx-offline-tts -print -quit)"
+          test -x "$exe"
+          lib="$(find "$d" -type f -name 'libonnxruntime.so*' -print -quit)"
+          if [[ -n "$lib" ]]; then export LD_LIBRARY_PATH="$(dirname "$lib"):${LD_LIBRARY_PATH:-}"; fi
+          python tools/smoke_models.py "$exe"
       - name: Build and lint APK
         run: gradle --no-daemon --stacktrace :app:assembleDebug :app:lintDebug
       - name: Verify APK contents, offline permission and signature
